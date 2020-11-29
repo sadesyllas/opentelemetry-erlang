@@ -11,7 +11,12 @@
 -include("otel_tracer.hrl").
 
 all() ->
-    [noop_tracer, update_span_data, noop_with_span, can_create_link_from_span].
+    [noop_tracer,
+     update_span_data,
+     noop_start_span,
+     noop_with_span,
+     can_create_link_from_span,
+     set_current_span_trace_id_span_id].
 
 init_per_suite(Config) ->
     application:load(opentelemetry_api),
@@ -132,10 +137,79 @@ update_span_data(_Config) ->
 
     ok.
 
+noop_start_span(_Config) ->
+    Tracer = opentelemetry:get_tracer(),
+    ?assertMatch({otel_tracer_noop, _}, Tracer),
+
+    NewCtx = otel_ctx:set_value(otel_ctx:new(), ctx, <<"new_ctx">>),
+    otel_ctx:set_value(ctx, <<"existing_ctx">>),
+    otel_tracer:start_span(Tracer, <<"span1">>, #{}),
+    WithExistingCtx = otel_ctx:get_current(),
+    ?assertEqual(<<"existing_ctx">>, maps:get(ctx, WithExistingCtx)),
+    otel_tracer:start_span(Tracer, <<"span2">>, #{context => NewCtx}),
+    WithNewCtx = otel_ctx:get_current(),
+    ?assertEqual(<<"new_ctx">>, maps:get(ctx, WithNewCtx)),
+
+    TraceId = opentelemetry:generate_trace_id(),
+    SpanId = opentelemetry:generate_span_id(),
+    otel_tracer:start_span(Tracer, <<"span3">>, #{}),
+    ?assertEqual(undefined, otel_tracer:current_span_ctx()),
+    otel_tracer:start_span(Tracer, <<"span4">>, #{parent => {TraceId, SpanId}}),
+    ?assertMatch(#span_ctx{}, otel_tracer:current_span_ctx()),
+    #span_ctx{trace_id=SetTraceId, span_id=SetSpanId} = otel_tracer:current_span_ctx(),
+    ?assertEqual(TraceId, SetTraceId),
+    ?assertEqual(SpanId, SetSpanId),
+
+    ok.
+
 noop_with_span(_Config) ->
     Tracer = opentelemetry:get_tracer(),
     ?assertMatch({otel_tracer_noop, _}, Tracer),
 
     Result = some_result,
     ?assertEqual(Result, otel_tracer:with_span(Tracer, <<"span1">>, fun(_) -> Result end)),
+
+    NewCtx = otel_ctx:set_value(otel_ctx:new(), ctx, <<"new_ctx">>),
+    otel_ctx:set_value(ctx, <<"existing_ctx">>),
+    WithExistingCtx = otel_tracer:with_span(Tracer, <<"span2">>, fun(_) -> otel_ctx:get_current() end),
+    ?assertEqual(<<"existing_ctx">>, maps:get(ctx, WithExistingCtx)),
+    WithNewCtx = otel_tracer:with_span(Tracer, <<"span3">>, #{context => NewCtx}, fun(_) ->
+        otel_ctx:get_current() end),
+    ?assertEqual(<<"new_ctx">>, maps:get(ctx, WithNewCtx)),
+
+    TraceId = opentelemetry:generate_trace_id(),
+    SpanId = opentelemetry:generate_span_id(),
+    WithExistingActiveSpan = otel_tracer:with_span(Tracer, <<"span4">>, fun(_) ->
+        otel_tracer:current_span_ctx() end),
+    #span_ctx{trace_id=ExistingTraceId, span_id=ExistingSpanId} = WithExistingActiveSpan,
+    ?assertNotEqual(TraceId, ExistingTraceId),
+    ?assertNotEqual(SpanId, ExistingSpanId),
+    WithNewActiveSpan = otel_tracer:with_span(Tracer, <<"span5">>, #{parent => {TraceId, SpanId}}, fun(_) ->
+        otel_tracer:current_span_ctx() end),
+    ?assertMatch(#span_ctx{}, WithNewActiveSpan),
+    #span_ctx{trace_id=SetTraceId, span_id=SetSpanId} = WithNewActiveSpan,
+    ?assertEqual(TraceId, SetTraceId),
+    ?assertNotEqual(SpanId, SetSpanId),
+    WithNewActiveSpanRestored = otel_tracer:current_span_ctx(),
+    ?assertMatch(#span_ctx{}, WithNewActiveSpanRestored),
+    #span_ctx{trace_id=SetTraceIdRestored, span_id=SetSpanIdRestored} = WithNewActiveSpanRestored,
+    ?assertEqual(TraceId, SetTraceIdRestored),
+    ?assertEqual(SpanId, SetSpanIdRestored),
+
+    ok.
+
+set_current_span_trace_id_span_id(_Config) ->
+    Tracer = opentelemetry:get_tracer(),
+    ?assertMatch({otel_tracer_noop, _}, Tracer),
+
+    Result = some_result,
+    ?assertEqual(Result, otel_tracer:with_span(Tracer, <<"span1">>, fun(_) -> Result end)),
+
+    NewCtx = otel_ctx:set_value(otel_ctx:new(), ctx, <<"new_ctx">>),
+    otel_ctx:set_value(ctx, <<"existing_ctx">>),
+    WithExistingCtx = otel_tracer:with_span(Tracer, <<"span2">>, fun(_) -> otel_ctx:get_current() end),
+    ?assertEqual(<<"existing_ctx">>, maps:get(ctx, WithExistingCtx)),
+    WithNewCtx = otel_tracer:with_span(Tracer, <<"span3">>, #{context => NewCtx}, fun(_) -> otel_ctx:get_current() end),
+    ?assertEqual(<<"new_ctx">>, maps:get(ctx, WithNewCtx)),
+
     ok.
